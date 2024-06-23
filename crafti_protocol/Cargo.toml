@@ -8,3 +8,4 @@ anyhow = "1.0.86"
 async-std = "1.12.0"
 async-trait = "0.1.80"
 thiserror = "1.0.61"
+crafti_protocol_derive = { path = "crafti_protocol_derive" }

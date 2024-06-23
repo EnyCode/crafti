@@ -230,7 +230,17 @@ dependencies = [
  "anyhow",
  "async-std",
  "async-trait",
+ "crafti_protocol_derive",
  "thiserror",
+]
+
+[[package]]
+name = "crafti_protocol_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

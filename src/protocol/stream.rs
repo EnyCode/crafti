@@ -1,31 +1,16 @@
+use std::{fmt::Debug, pin::Pin, task::Poll};
+
+use super::{
+    read::MinecraftReadable,
+    write::{MinecraftWriteable, MinecraftWriteableVar},
+};
+use crate::protocol::read::MinecraftReadableVar;
 use anyhow::Error;
 use async_std::{
     io::{Read, ReadExt, Write, WriteExt},
-    task::block_on,
+    task::{block_on, Context},
 };
 use async_trait::async_trait;
-use std::{
-    fmt::Debug,
-    pin::Pin,
-    task::{Context, Poll},
-};
-
-use crate::protocol::{
-    read::{MinecraftReadable, MinecraftReadableVar},
-    write::{MinecraftWriteable, MinecraftWriteableVar},
-};
-
-pub enum PacketDirection {
-    Clientbound,
-    Serverbound,
-}
-
-pub enum NetworkStatus {
-    Handshake,
-    Status,
-    Login,
-    Play,
-}
 
 #[derive(Debug)]
 pub struct Cursor(async_std::io::Cursor<Vec<u8>>);
@@ -33,6 +18,16 @@ pub struct Cursor(async_std::io::Cursor<Vec<u8>>);
 impl std::io::Read for Cursor {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
         block_on(async { self.0.read(buf).await })
+    }
+}
+
+impl std::io::Write for Cursor {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
+        block_on(async { self.0.write(buf).await })
+    }
+
+    fn flush(&mut self) -> Result<(), std::io::Error> {
+        block_on(async { self.0.flush().await })
     }
 }
 
@@ -94,20 +89,11 @@ impl Cursor {
 
 pub trait MinecraftPacket: MinecraftReadable<Cursor> + MinecraftWriteable<Cursor> {
     fn get_id() -> i32;
-    fn get_direction() -> PacketDirection;
-    fn get_status() -> NetworkStatus;
 }
 
 #[async_trait]
-pub trait MinecraftStream<S: Read + Write + Send + Sync + Unpin>: MinecraftStreamRead<S> {}
-
-#[async_trait]
-pub trait MinecraftStreamRead<S: Read + Send + Sync + Unpin> {
+pub trait MinecraftStream<S: Read + Write + Send + Sync + Unpin> {
     async fn read_packet<R: MinecraftPacket + Send>(&mut self) -> Result<R, Error>;
-}
-
-#[async_trait]
-pub trait MinecraftStreamWrite<S: Write + Send + Sync + Unpin> {
     async fn write_packet<R: MinecraftPacket + Send>(
         &mut self,
         packet: &mut R,
@@ -115,7 +101,7 @@ pub trait MinecraftStreamWrite<S: Write + Send + Sync + Unpin> {
 }
 
 #[async_trait]
-impl<S: Read + Send + Sync + Unpin + Debug> MinecraftStreamRead<S> for S {
+impl<S: Read + Write + Send + Sync + Unpin + Debug> MinecraftStream<S> for S {
     async fn read_packet<R: MinecraftPacket + Send>(&mut self) -> Result<R, Error> {
         let length = i32::read_var_from(self).await?;
 
@@ -135,10 +121,7 @@ impl<S: Read + Send + Sync + Unpin + Debug> MinecraftStreamRead<S> for S {
 
         R::read_from(&mut cursor).await
     }
-}
 
-#[async_trait]
-impl<S: Write + Send + Sync + Unpin> MinecraftStreamWrite<S> for S {
     async fn write_packet<R: MinecraftPacket + Send + ?Sized>(
         &mut self,
         packet: &mut R,

@@ -1,9 +1,15 @@
+use anyhow::Error;
 use async_std::{
+    io::copy,
     net::{TcpListener, TcpStream},
     stream::StreamExt,
     task::spawn,
 };
-use protocol::packets::{HandshakePacket, NextState, StatusResponsePacket};
+use futures::try_join;
+use protocol::{
+    packets::{HandshakePacket, LoginStartPacket, NextState},
+    stream::MinecraftStream,
+};
 
 pub mod protocol;
 
@@ -31,7 +37,7 @@ impl Default for Config {
 }
 
 #[async_std::main]
-fn main() {
+async fn main() {
     let config = Config::default();
 
     let listener = TcpListener::bind(config.listening_ip.clone())
@@ -49,4 +55,26 @@ fn main() {
 
 async fn handle_conn(mut client: TcpStream, config: Config) -> Result<(), Error> {
     let mut handshake: HandshakePacket = client.read_packet().await?;
+
+    if handshake.next_state == NextState::Status {
+    } else {
+        handshake.server_address = config.target_ip.to_owned();
+
+        let mut login_start: LoginStartPacket = client.read_packet().await?;
+        println!("connecting player {}", login_start.name);
+
+        let mut server = TcpStream::connect(config.target_ip.to_owned() + ":25565").await?;
+        server.write_packet(&mut handshake).await?;
+        server.write_packet(&mut login_start).await?;
+
+        let (mut client_recv, mut client_send) = (&client, &client);
+        let (mut server_recv, mut server_send) = (&server, &server);
+
+        let client_to_server = copy(&mut client_recv, &mut server_send);
+        let server_to_client = copy(&mut server_recv, &mut client_send);
+
+        let (_, _) = try_join!(client_to_server, server_to_client)?;
+    }
+
+    Ok(())
 }

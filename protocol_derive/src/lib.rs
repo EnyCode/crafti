@@ -1,57 +1,13 @@
 use std::collections::HashMap;
 
 use proc_macro::TokenStream;
-use proc_macro2::{Punct, Spacing, Span, TokenStream as TokenStream2, TokenTree};
-use quote::{quote, ToTokens, TokenStreamExt};
+use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
+use quote::quote;
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Ident, Index};
-
-enum PacketDirection {
-    Clientbound,
-    Serverbound,
-}
-
-impl ToTokens for PacketDirection {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        tokens.append(Ident::new("PacketDirection", Span::call_site()));
-
-        tokens.append(Punct::new(':', Spacing::Joint));
-        tokens.append(Punct::new(':', Spacing::Alone));
-
-        tokens.append(match self {
-            PacketDirection::Clientbound => Ident::new("Clientbound", Span::call_site()),
-            PacketDirection::Serverbound => Ident::new("Serverbound", Span::call_site()),
-        });
-    }
-}
-
-enum NetworkStatus {
-    Handshake,
-    Status,
-    Login,
-    Play,
-}
-
-impl ToTokens for NetworkStatus {
-    fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
-        tokens.append(Ident::new("NetworkStatus", Span::call_site()));
-
-        tokens.append(Punct::new(':', Spacing::Joint));
-        tokens.append(Punct::new(':', Spacing::Alone));
-
-        tokens.append(match self {
-            NetworkStatus::Handshake => Ident::new("Handshake", Span::call_site()),
-            NetworkStatus::Status => Ident::new("Status", Span::call_site()),
-            NetworkStatus::Login => Ident::new("Login", Span::call_site()),
-            NetworkStatus::Play => Ident::new("Play", Span::call_site()),
-        });
-    }
-}
 
 #[allow(dead_code)]
 struct PacketData {
     id: i32,
-    direction: PacketDirection,
-    status: NetworkStatus,
 }
 
 #[proc_macro_derive(MinecraftPacket, attributes(var, packet))]
@@ -73,28 +29,16 @@ pub fn derive_minecraftpacket(input: TokenStream) -> TokenStream {
         let write: TokenStream2 = derive_minecraftwriteable(input).into();
 
         let id = data.id;
-        let direction = data.direction;
-        let status = data.status;
 
         let data = quote! {
             #read
             #write
-            impl crafti_protocol::stream::MinecraftPacket for #name {
+            impl crate::protocol::stream::MinecraftPacket for #name {
                 fn get_id() -> i32 {
                     #id
                 }
-
-                fn get_direction() -> crafti_protocol::stream::PacketDirection {
-                    crafti_protocol::stream::#direction
-                }
-
-                fn get_status() -> crafti_protocol::stream::NetworkStatus {
-                    crafti_protocol::stream::#status
-                }
             }
         };
-
-        println!("{}", data);
 
         return data.into();
     }
@@ -133,7 +77,7 @@ pub fn derive_minecraftreadable(input: TokenStream) -> TokenStream {
                     if path.unwrap().is_ident("var") {
                         is_var = true;
                         code.push(quote! {
-                            #name: <#ty as crafti_protocol::read::MinecraftReadableVar<R>>::read_var_from(buffer).await?,
+                            #name: <#ty as crate::protocol::read::MinecraftReadableVar<R>>::read_var_from(buffer).await?,
                         });
                         continue;
                     }
@@ -141,13 +85,13 @@ pub fn derive_minecraftreadable(input: TokenStream) -> TokenStream {
 
                 if !is_var {
                     code.push(quote! {
-                        #name: <#ty as crafti_protocol::read::MinecraftReadable<R>>::read_from(buffer).await?,
+                        #name: <#ty as crate::protocol::read::MinecraftReadable<R>>::read_from(buffer).await?,
                     });
                 }
             }
 
             let output = quote! {
-                #[async_trait::async_trait] impl<R: std::io::Read + async_std::io::Read + Unpin + Send + Sync> crafti_protocol::read::MinecraftReadable<R> for #struct_name {
+                #[async_trait::async_trait] impl<R: async_std::io::Read + Unpin + Send + Sync> crate::protocol::read::MinecraftReadable<R> for #struct_name {
                     async fn read_from(buffer: &mut R) -> Result<Self, anyhow::Error> {
                         Ok(Self { #(#code)* })
                     }
@@ -174,7 +118,7 @@ pub fn derive_minecraftreadable(input: TokenStream) -> TokenStream {
                     if path.unwrap().is_ident("var") {
                         is_var = true;
                         code.push(quote! {
-                            #name: <#ty as crafti_protocol::read::MinecraftReadableVar<R>>::read_var_from(buffer).await?,
+                            #name: <#ty as crate::protocol::read::MinecraftReadableVar<R>>::read_var_from(buffer).await?,
                         });
                         continue;
                     }
@@ -182,13 +126,13 @@ pub fn derive_minecraftreadable(input: TokenStream) -> TokenStream {
 
                 if !is_var {
                     code.push(quote! {
-                        #name: <#ty as crafti_protocol::read::MinecraftReadable<R>>::read_from(buffer).await?,
+                        #name: <#ty as crate::protocol::read::MinecraftReadable<R>>::read_from(buffer).await?,
                     });
                 }
             }
 
             let output = quote! {
-                #[async_trait::async_trait] impl<R: std::io::Read + async_std::io::Read + Unpin + Send + Sync> crafti_protocol::read::MinecraftReadable<R> for #struct_name {
+                #[async_trait::async_trait] impl<R: async_std::io::Read + Unpin + Send + Sync> crate::protocol::read::MinecraftReadable<R> for #struct_name {
                     async fn read_from(buffer: &mut R) -> Result<Self, anyhow::Error> {
                         Ok(Self { #(#code)* })
                     }
@@ -236,20 +180,20 @@ pub fn derive_minecraftwriteable(input: TokenStream) -> TokenStream {
                     if path.unwrap().is_ident("var") {
                         is_var = true;
                         code.push(quote! {
-                            <#ty as crafti_protocol::write::MinecraftWriteableVar<W>>::write_var_to(&self.#name, buffer).await?;
+                            <#ty as crate::protocol::write::MinecraftWriteableVar<W>>::write_var_to(&self.#name, buffer).await?;
                         });
                         continue;
                     }
                 }
                 if !is_var {
                     code.push(quote! {
-                        <#ty as crafti_protocol::write::MinecraftWriteable<W>>::write_to(&self.#name, buffer).await?;
+                        <#ty as crate::protocol::write::MinecraftWriteable<W>>::write_to(&self.#name, buffer).await?;
                     });
                 }
             }
 
             let output = quote! {
-                #[async_trait::async_trait] impl<W: std::io::Write + async_std::io::Write + Unpin + Send + Sync> crafti_protocol::write::MinecraftWriteable<W> for #struct_name {
+                #[async_trait::async_trait] impl<W: async_std::io::Write + Unpin + Send + Sync> crate::protocol::write::MinecraftWriteable<W> for #struct_name {
                     async fn write_to(&self, buffer: &mut W) -> Result<(), anyhow::Error> {
                         #(#code)*
 
@@ -278,20 +222,20 @@ pub fn derive_minecraftwriteable(input: TokenStream) -> TokenStream {
                     if path.unwrap().is_ident("var") {
                         is_var = true;
                         code.push(quote! {
-                            <#ty as crafti_protocol::write::MinecraftWriteableVar<W>>::write_var_to(&self.#name, buffer).await?;
+                            <#ty as crate::protocol::write::MinecraftWriteableVar<W>>::write_var_to(&self.#name, buffer).await?;
                         });
                         continue;
                     }
                 }
                 if !is_var {
                     code.push(quote! {
-                        <#ty as crafti_protocol::write::MinecraftWriteable<W>>::write_to(&self.#name, buffer).await?;
+                        <#ty as crate::protocol::write::MinecraftWriteable<W>>::write_to(&self.#name, buffer).await?;
                     });
                 }
             }
 
             let output = quote! {
-                #[async_trait::async_trait] impl<W: std::io::Write + async_std::io::Write + Unpin + Send + Sync> crafti_protocol::write::MinecraftWriteable<W> for #struct_name {
+                #[async_trait::async_trait] impl<W: async_std::io::Write + Unpin + Send + Sync> crate::protocol::write::MinecraftWriteable<W> for #struct_name {
                     async fn write_to(&self, buffer: &mut W) -> Result<(), anyhow::Error> {
                         #(#code)*
 
@@ -317,7 +261,7 @@ fn parse_packet_data(attr: Attribute) -> PacketData {
         .expect("packet attribute must be a list");
 
     let values = meta.tokens.clone().into_iter().collect::<Vec<TokenTree>>();
-    if values.len() != 17 {
+    if values.len() != 3 {
         panic!("Invalid packet attribute length");
     }
 
@@ -359,25 +303,9 @@ fn parse_packet_data(attr: Attribute) -> PacketData {
 
     if !kv.contains_key("id") {
         panic!("packet attribute must contain an id");
-    } else if !kv.contains_key("direction") {
-        panic!("packet attribute must contain a direction");
-    } else if !kv.contains_key("status") {
-        panic!("packet attribute must contain a status");
     }
 
     return PacketData {
         id: kv.get("id").unwrap().parse::<i32>().unwrap(),
-        direction: match kv.get("direction").unwrap().as_str() {
-            "PacketDirectionClientbound" => PacketDirection::Clientbound,
-            "PacketDirectionServerbound" => PacketDirection::Serverbound,
-            _ => panic!("Invalid direction"),
-        },
-        status: match kv.get("status").unwrap().as_str() {
-            "NetworkStatusHandshake" => NetworkStatus::Handshake,
-            "NetworkStatusStatus" => NetworkStatus::Status,
-            "NetworkStatusLogin" => NetworkStatus::Login,
-            "NetworkStatusPlay" => NetworkStatus::Play,
-            _ => panic!("Invalid status"),
-        },
     };
 }

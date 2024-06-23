@@ -10,7 +10,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{
+use crate::protocol::{
     read::{MinecraftReadable, MinecraftReadableVar},
     write::{MinecraftWriteable, MinecraftWriteableVar},
 };

@@ -1,14 +1,12 @@
 use anyhow::Error;
 use async_std::io::{Read, Write};
 use async_trait::async_trait;
-use crafti_protocol_derive::MinecraftPacket;
+use protocol_derive::MinecraftPacket;
 
-use crate::{
+use crate::protocol::{
     read::{MinecraftReadError, MinecraftReadable, MinecraftReadableVar},
     write::{MinecraftWriteable, MinecraftWriteableVar},
 };
-
-use crate as crafti_protocol;
 
 #[derive(MinecraftPacket, Debug, Default)]
 #[packet(id = 0, direction = PacketDirection::Serverbound, status = NetworkStatus::Handshake)]

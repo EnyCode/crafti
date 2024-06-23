@@ -1,12 +1,19 @@
 use anyhow::Error;
 use async_std::{
-    io::{Read, ReadExt, Write},
+    io::{Read, ReadExt, Write, WriteExt},
     task::block_on,
 };
 use async_trait::async_trait;
-use std::{fmt::Debug, pin::Pin, task::Poll};
+use std::{
+    fmt::Debug,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
-use crate::read::{MinecraftReadable, MinecraftReadableVar};
+use crate::{
+    read::{MinecraftReadable, MinecraftReadableVar},
+    write::{MinecraftWriteable, MinecraftWriteableVar},
+};
 
 pub enum PacketDirection {
     Clientbound,
@@ -39,6 +46,24 @@ impl Read for Cursor {
     }
 }
 
+impl Write for Cursor {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().0).poll_flush(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().0).poll_close(cx)
+    }
+}
+
 impl Cursor {
     pub fn new(inner: Vec<u8>) -> Cursor {
         Self {
@@ -67,8 +92,7 @@ impl Cursor {
     }
 }
 
-pub trait MinecraftPacket: MinecraftReadable<Cursor> {
-    // + MinecraftWriteable<Cursor> {
+pub trait MinecraftPacket: MinecraftReadable<Cursor> + MinecraftWriteable<Cursor> {
     fn get_id() -> i32;
     fn get_direction() -> PacketDirection;
     fn get_status() -> NetworkStatus;
@@ -80,6 +104,14 @@ pub trait MinecraftStream<S: Read + Write + Send + Sync + Unpin>: MinecraftStrea
 #[async_trait]
 pub trait MinecraftStreamRead<S: Read + Send + Sync + Unpin> {
     async fn read_packet<R: MinecraftPacket + Send>(&mut self) -> Result<R, Error>;
+}
+
+#[async_trait]
+pub trait MinecraftStreamWrite<S: Write + Send + Sync + Unpin> {
+    async fn write_packet<R: MinecraftPacket + Send>(
+        &mut self,
+        packet: &mut R,
+    ) -> Result<(), Error>;
 }
 
 #[async_trait]
@@ -102,5 +134,25 @@ impl<S: Read + Send + Sync + Unpin + Debug> MinecraftStreamRead<S> for S {
         }
 
         R::read_from(&mut cursor).await
+    }
+}
+
+#[async_trait]
+impl<S: Write + Send + Sync + Unpin> MinecraftStreamWrite<S> for S {
+    async fn write_packet<R: MinecraftPacket + Send + ?Sized>(
+        &mut self,
+        packet: &mut R,
+    ) -> Result<(), Error> {
+        let mut data = Cursor::new(Vec::new());
+        let mut id = Cursor::new(Vec::new());
+
+        packet.write_to(&mut data).await?;
+        R::get_id().write_var_to(&mut id).await?;
+
+        i32::write_var_to(&((data.get_ref().len() + id.get_ref().len()) as i32), self).await?;
+        self.write_all(id.get_ref()).await?;
+        self.write_all(data.get_ref()).await?;
+
+        Ok(())
     }
 }

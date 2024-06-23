@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use anyhow::Error;
 use async_std::{
+    future::timeout,
     io::copy,
     net::{TcpListener, TcpStream},
     stream::StreamExt,
@@ -7,9 +10,14 @@ use async_std::{
 };
 use futures::try_join;
 use protocol::{
-    packets::{HandshakePacket, LoginStartPacket, NextState},
+    packets::{
+        HandshakePacket, LoginStartPacket, NextState, PingRequestPacket, PongResponsePacket,
+        StatusRequestPacket, StatusResponsePacket,
+    },
+    read::{MinecraftReadable, MinecraftReadableVar},
     stream::MinecraftStream,
 };
+use regex::Regex;
 
 pub mod protocol;
 
@@ -57,6 +65,111 @@ async fn handle_conn(mut client: TcpStream, config: Config) -> Result<(), Error>
     let mut handshake: HandshakePacket = client.read_packet().await?;
 
     if handshake.next_state == NextState::Status {
+        for _ in 0..2 {
+            let _ = i32::read_var_from(&mut client).await?;
+            let id = i32::read_var_from(&mut client).await?;
+            if id == 0 {
+                // get the real player count and check if online
+                let server = timeout(
+                    Duration::from_millis(1500),
+                    TcpStream::connect(config.target_ip.to_owned() + ":25565"),
+                )
+                .await;
+                if server.is_err() || server.as_ref().unwrap().is_err() {
+                    let out = r#"{
+"version": {
+    "name": "Offline",
+    "protocol": -1
+},
+"players": {
+    "max": 0,
+    "online": 0,
+    "sample": []
+},
+"description": "#
+                        .to_owned()
+                        + &config.offline_motd
+                        + r#",
+"# + &config.favicon + r#"
+"enforcesSecureChat": true,
+"previewsChat": true
+}"#;
+                    println!("out {}", out);
+                    client
+                        .write_packet(&mut StatusResponsePacket {
+                            response: r#"{
+"version": {
+    "name": "Offline",
+    "protocol": -1
+},
+"players": {
+    "max": 0,
+    "online": 0,
+    "sample": []
+},
+"description": "#
+                                .to_owned()
+                                + &config.offline_motd
+                                + r#",
+"# + &config.favicon + r#"
+enforcesSecureChat": true,
+"previewsChat": true
+}"#,
+                        })
+                        .await?;
+                } else {
+                    let mut server = server.unwrap().unwrap();
+
+                    server
+                        .write_packet(&mut HandshakePacket {
+                            protocol_version: 0,
+                            server_address: config.target_ip.to_owned(),
+                            server_port: 25565,
+                            next_state: NextState::Status,
+                        })
+                        .await?;
+
+                    server.write_packet(&mut StatusRequestPacket {}).await?;
+
+                    let status: StatusResponsePacket = server.read_packet().await?;
+                    let re = Regex::new(r#"("players":\{.+})}"#)?;
+
+                    let player_info = re
+                        .captures(&status.response)
+                        .unwrap()
+                        .get(1)
+                        .unwrap()
+                        .as_str();
+
+                    client
+                        .write_packet(&mut StatusResponsePacket {
+                            response: r#"{
+"version": {
+    "name": "Paper 1.20.4",
+    "protocol": 765
+},
+"#
+                            .to_owned()
+                                + player_info
+                                + r#",
+"description": "# + &config.motd + r#",
+"# + &config.favicon + r#"
+"enforcesSecureChat": true,
+"previewsChat": true
+}"#,
+                        })
+                        .await?;
+                }
+            } else if id == 1 {
+                let request = PingRequestPacket::read_from(&mut client).await?;
+
+                client
+                    .write_packet(&mut PongResponsePacket {
+                        payload: request.payload,
+                    })
+                    .await?;
+            }
+        }
     } else {
         handshake.server_address = config.target_ip.to_owned();
 

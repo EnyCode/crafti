@@ -1,5 +1,12 @@
 use std::time::Duration;
 
+use crate::{
+    motd::print_motd,
+    protocol::{
+        packets::{LoginStartPacket, PingRequestPacket, PongResponsePacket, StatusRequestPacket},
+        stream::MinecraftStream,
+    },
+};
 use anyhow::Error;
 use async_std::{
     future::timeout,
@@ -8,18 +15,21 @@ use async_std::{
     stream::StreamExt,
     task::spawn,
 };
+use colored::Colorize;
 use futures::try_join;
 use protocol::{
-    packets::{
-        HandshakePacket, LoginStartPacket, NextState, PingRequestPacket, PongResponsePacket,
-        StatusRequestPacket, StatusResponsePacket,
-    },
+    packets::{HandshakePacket, NextState, StatusResponsePacket},
     read::{MinecraftReadable, MinecraftReadableVar},
-    stream::MinecraftStream,
 };
 use regex::Regex;
+use std::env;
 
+pub mod motd;
 pub mod protocol;
+
+//const SERVER_ADDRESS: &str = "25.41.255.30";
+//const LISTENING_ADDRESS: &str = "0.0.0.0:25565";
+//const MOTD: &str = r#"[{"text":"Minecraft ","color":"dark_green"},{"text":"S","color":"gold","bold":true},{"text":"M","color":"blue","bold":true},{"text":"P","color":"red","bold":true}]"#;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -46,18 +56,65 @@ impl Default for Config {
 
 #[async_std::main]
 async fn main() {
-    let config = Config::default();
+    let args: Vec<String> = env::args().collect();
+    println!("{:?}", args);
+    let mut config = Config::default();
+    if args.len() < 2 || args.len() > 5 {
+        println!(
+            "{}, a small proxy for Minecraft 1.7+.",
+            "mc-nano".bright_red().bold()
+        );
+        println!();
+        println!(
+            "{} {} {} {}",
+            "Usage: ".bright_green().bold(),
+            "nano-mc ".bright_cyan().bold(),
+            "[target-ip]".bright_cyan(),
+            "<listening-ip:port> <motd> <favicon>".cyan()
+        );
+    } else {
+        config.target_ip = args.get(1).unwrap().to_owned();
+        if args.len() > 2 {
+            config.listening_ip = args.get(2).unwrap().to_owned();
+        }
+        if args.len() > 3 {
+            config.motd = args.get(3).unwrap().to_owned();
+            let mut chars = config.motd.chars();
+            if chars.next().unwrap() == '[' && chars.next_back().unwrap() == ']' {
+                chars = config.motd.chars();
+                chars.next_back();
+                config.offline_motd = chars.as_str().to_owned()
+                    + r#",{"text":" (","color":"gray"},{"text":"Offline","color":"red"},{"text":")","color":"gray"}]"#;
+            }
+        }
+        if args.len() > 4 {
+            config.favicon = r#""favicon":""#.to_owned() + &args.get(4).unwrap().clone() + r#"","#;
+        }
+        println!("{}", "Starting...".yellow().bold());
+        let listener = TcpListener::bind(config.listening_ip.clone())
+            .await
+            .unwrap();
+        println!(
+            "{} {}{}",
+            "Listening on".bright_blue(),
+            config.listening_ip.clone().green().bold(),
+            ".".blue()
+        );
+        println!("====================");
+        println!(
+            "{} {}",
+            "Current".green().bold().underline(),
+            "MOTD".bright_red().bold().underline()
+        );
+        print_motd(config.clone());
+        println!("====================");
+        let mut incoming = listener.incoming();
 
-    let listener = TcpListener::bind(config.listening_ip.clone())
-        .await
-        .unwrap();
-
-    let mut incoming = listener.incoming();
-
-    while let Some(stream) = incoming.next().await {
-        let stream = stream.unwrap();
-        let cloned = config.clone();
-        spawn(async move { handle_conn(stream, cloned).await });
+        while let Some(stream) = incoming.next().await {
+            let stream = stream.unwrap();
+            let cloned = config.clone();
+            spawn(async move { handle_conn(stream, cloned).await });
+        }
     }
 }
 
@@ -77,43 +134,49 @@ async fn handle_conn(mut client: TcpStream, config: Config) -> Result<(), Error>
                 .await;
                 if server.is_err() || server.as_ref().unwrap().is_err() {
                     let out = r#"{
-"version": {
-    "name": "Offline",
-    "protocol": -1
-},
-"players": {
-    "max": 0,
-    "online": 0,
-    "sample": []
-},
-"description": "#
+    "version": {
+        "name": "Offline",
+        "protocol": -1
+    },
+    "players": {
+        "max": 0,
+        "online": 0,
+        "sample": []
+    },
+    "description": "#
                         .to_owned()
                         + &config.offline_motd
                         + r#",
-"# + &config.favicon + r#"
-"enforcesSecureChat": true,
-"previewsChat": true
+    "# + &config.favicon + r#"
+    "enforcesSecureChat": true,
+    "previewsChat": true
 }"#;
                     println!("out {}", out);
+                    println!(
+                        "{} {}{}",
+                        "Received status request, responding with".blue(),
+                        "offline".red().bold(),
+                        ".".blue()
+                    );
                     client
                         .write_packet(&mut StatusResponsePacket {
                             response: r#"{
-"version": {
-    "name": "Offline",
-    "protocol": -1
-},
-"players": {
-    "max": 0,
-    "online": 0,
-    "sample": []
-},
-"description": "#
+    "version": {
+        "name": "Offline",
+        "protocol": -1
+    },
+    "players": {
+        "max": 0,
+        "online": 0,
+        "sample": []
+    },
+    "description": "#
                                 .to_owned()
                                 + &config.offline_motd
                                 + r#",
-"# + &config.favicon + r#"
-enforcesSecureChat": true,
-"previewsChat": true
+    "# + &config.favicon + r#"
+    enforcesSecureChat": true,
+    "previewsChat": true
 }"#,
                         })
                         .await?;
@@ -141,21 +204,29 @@ enforcesSecureChat": true,
                         .unwrap()
                         .as_str();
 
+                    println!(
+                        "{} {}{}",
+                        "Received status request, responded with ".bright_blue(),
+                        "online".green().bold(),
+                        ".".bright_blue()
+                    );
+
                     client
                         .write_packet(&mut StatusResponsePacket {
                             response: r#"{
-"version": {
-    "name": "Paper 1.20.4",
-    "protocol": 765
-},
-"#
+    "version": {
+        "name": "Paper 1.20.4",
+        "protocol": 765
+    },
+    "#
                             .to_owned()
                                 + player_info
                                 + r#",
-"description": "# + &config.motd + r#",
-"# + &config.favicon + r#"
-"enforcesSecureChat": true,
-"previewsChat": true
+    "description": "# + &config.motd
+                                + r#",
+    "# + &config.favicon + r#"
+    "enforcesSecureChat": true,
+    "previewsChat": true
 }"#,
                         })
                         .await?;
@@ -171,11 +242,17 @@ enforcesSecureChat": true,
             }
         }
     } else {
+        //let mut server = TcpStream::connect(SERVER_ADDRESS.to_owned() + ":25565").await?;
         handshake.server_address = config.target_ip.to_owned();
 
         let mut login_start: LoginStartPacket = client.read_packet().await?;
-        println!("connecting player {}", login_start.name);
 
+        println!(
+            "{} {} {}",
+            "Connecting player".bright_yellow(),
+            login_start.name.blue().bold(),
+            "to server...".bright_yellow()
+        );
         let mut server = TcpStream::connect(config.target_ip.to_owned() + ":25565").await?;
         server.write_packet(&mut handshake).await?;
         server.write_packet(&mut login_start).await?;
